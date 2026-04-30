@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+venv/
+.venv/
+output/
+*.html
+*.pdf
+!templates/*.html
+build*.sh
+.DS_Store
