@@ -1,0 +1,147 @@
+#!/bin/bash
+# atarus-webscan dependency installer
+# Downloads prebuilt nuclei binary from GitHub releases (no Go required)
+
+set -e
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo "atarus-webscan dependency installer"
+echo "==================================="
+echo ""
+
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+else
+    OS="unknown"
+fi
+
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64) PD_ARCH="amd64" ;;
+    aarch64|arm64) PD_ARCH="arm64" ;;
+    armv7l) PD_ARCH="arm" ;;
+    *) PD_ARCH="amd64" ;;
+esac
+
+PLATFORM="linux"
+echo -e "${GREEN}Detected OS:${NC} $OS"
+echo -e "${GREEN}Architecture:${NC} $ARCH (downloading $PLATFORM-$PD_ARCH binaries)"
+echo ""
+
+if ! getent hosts api.github.com >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] DNS lookup for api.github.com failed.${NC}"
+    echo "    If you're on a VM with broken DNS:"
+    echo "      sudo bash -c 'echo \"nameserver 1.1.1.1\" > /etc/resolv.conf'"
+    echo "      sudo bash -c 'echo \"nameserver 8.8.8.8\" >> /etc/resolv.conf'"
+    echo "    Then re-run this script."
+    exit 1
+fi
+
+mkdir -p "$HOME/go/bin"
+GOBIN_PATH="$HOME/go/bin"
+
+if [[ ":$PATH:" != *":$GOBIN_PATH:"* ]]; then
+    export PATH="$PATH:$GOBIN_PATH"
+fi
+
+echo "Installing system tools (unzip)..."
+case "$OS" in
+    kali|debian|ubuntu)
+        sudo apt-get update -qq 2>&1 | tail -2
+        sudo apt-get install -y unzip 2>&1 | grep -v "is already the newest" | tail -3
+        ;;
+    arch)
+        sudo pacman -Sy --noconfirm unzip
+        ;;
+    fedora|rhel|centos)
+        sudo dnf install -y unzip
+        ;;
+esac
+echo ""
+
+install_from_github() {
+    local name=$1
+    local repo=$2
+    local pattern=$3
+
+    echo "Installing $name..."
+
+    if [ -f "$HOME/go/bin/$name" ]; then
+        echo -e "${YELLOW}    [*] $name already exists, skipping${NC}"
+        return
+    fi
+
+    local api_url="https://api.github.com/repos/$repo/releases/latest"
+    local download_url=$(curl -s "$api_url" | grep "browser_download_url.*$pattern" | head -1 | cut -d'"' -f4)
+
+    if [ -z "$download_url" ]; then
+        echo -e "${RED}    [!] Could not find release matching '$pattern' for $repo${NC}"
+        return
+    fi
+
+    echo "    Downloading: $download_url"
+
+    cd /tmp
+    local filename=$(basename "$download_url")
+    rm -f "$filename"
+
+    if ! curl -sL -o "$filename" "$download_url"; then
+        echo -e "${RED}    [!] Download failed${NC}"
+        return
+    fi
+
+    rm -rf "/tmp/${name}-extract"
+    unzip -o "$filename" -d "/tmp/${name}-extract" > /dev/null
+    find "/tmp/${name}-extract" -type f -name "$name" -executable -exec mv {} "$HOME/go/bin/$name" \;
+    rm -rf "/tmp/${name}-extract"
+    rm -f "$filename"
+
+    if [ -f "$HOME/go/bin/$name" ]; then
+        chmod +x "$HOME/go/bin/$name"
+        echo -e "${GREEN}    [+] $name installed${NC}"
+    else
+        echo -e "${RED}    [!] $name extraction failed${NC}"
+    fi
+    echo ""
+}
+
+install_from_github "nuclei" "projectdiscovery/nuclei" "nuclei_.*_${PLATFORM}_${PD_ARCH}\.zip"
+
+if [ -f "$HOME/go/bin/nuclei" ]; then
+    echo "Updating nuclei templates..."
+    "$HOME/go/bin/nuclei" -update-templates 2>&1 | tail -3
+    echo ""
+fi
+
+echo "==================================="
+echo "Verification"
+echo "==================================="
+ALL_OK=true
+if [ -f "$HOME/go/bin/nuclei" ]; then
+    echo -e "  ${GREEN}[+] nuclei${NC}"
+else
+    echo -e "  ${RED}[!] nuclei not found${NC}"
+    ALL_OK=false
+fi
+
+echo ""
+echo -e "${YELLOW}IMPORTANT:${NC} Add ~/go/bin to your PATH permanently."
+echo "    Add this line to ~/.bashrc or ~/.zshrc:"
+echo "      export PATH=\"\$PATH:\$HOME/go/bin\""
+echo ""
+
+if [ "$ALL_OK" = true ]; then
+    echo -e "${GREEN}All dependencies installed.${NC}"
+else
+    echo -e "${YELLOW}nuclei install failed. The technology module will be skipped, other modules still work.${NC}"
+fi
+
+echo ""
+echo "Run a scan:"
+echo "  source venv/bin/activate"
+echo "  atarus-webscan -t https://example.com"
