@@ -10,15 +10,15 @@ atarus-webscan -t https://example.com
 
 That single command produces:
 
-- `atarus-webscan-example.com.html` — Atarus dark-theme tabbed report
-- `atarus-webscan-example.com.pdf` — branded PDF export
-- `atarus-webscan-example.com.json` — machine-readable output
+- `atarus-webscan-example.com.html` - Atarus dark-theme report
+- `atarus-webscan-example.com.pdf` - branded PDF export (needs the Pango system libraries, see Quick start)
+- `atarus-webscan-example.com.json` - machine-readable output
 
 ## What it does
 
 | Module | Description | External tool |
 |---|---|---|
-| `discover` | Site type and framework detection (16 frameworks) | None |
+| `discover` | Site type and framework detection (17 frameworks and platforms) | None |
 | `headers` | Security header analysis with grade for each | None |
 | `methods` | Dangerous HTTP method detection (PUT, DELETE, TRACE, etc) | None |
 | `dangerous_files` | Exposed sensitive file detection (.git, .env, backups, admin panels) | None |
@@ -29,7 +29,7 @@ That single command produces:
 
 Every probe is filtered against a calibrated 404 baseline. If a probed path returns a response that matches the catch-all 404 hash, it's discarded, even if the HTTP status is 200. This eliminates the most common false positives in legacy web scanners.
 
-The baseline is recalibrated per-module to handle sites that cache or rate-limit differently across paths.
+The `dangerous_files` module recalibrates its own baseline immediately before probing, to handle sites that cache or rate-limit differently over the course of a scan.
 
 ## Modern framework awareness
 
@@ -45,12 +45,12 @@ This drives smarter probing, fewer false positives, and accurate technology fing
 git clone https://github.com/atarus-security/atarus-webscan.git
 cd atarus-webscan
 
-# Python deps
+# Python deps (Python 3.10 or newer)
 python3 -m venv venv
 source venv/bin/activate
 pip install -e .
 
-# External tools (nuclei)
+# External tools (nuclei v3) and the Pango libraries WeasyPrint needs for PDF
 ./install-deps.sh
 
 # Add Go binaries to PATH (one-time)
@@ -88,6 +88,11 @@ Verbose output:
 atarus-webscan -t https://example.com -v
 ```
 
+Notes:
+- The target is a hostname. Any port in the URL is dropped, so a service on a non-standard port cannot be scanned yet.
+- `--rate-limit` is accepted but not yet applied to requests. Each module sends its probes sequentially; nuclei runs with its own limit of 60 requests per second and a 90 second timeout.
+- Without the Pango system libraries (`sudo apt install libpango-1.0-0 libpangoft2-1.0-0` on Debian or Kali) the scan, HTML and JSON reports work and the PDF step prints an error.
+
 ## What it is NOT
 
 atarus-webscan is a **fast, signature-based, unauthenticated web app scanner**. It is not a replacement for:
@@ -116,17 +121,29 @@ For active injection testing, use Burp Suite or OWASP ZAP after running atarus-w
 
 atarus-webscan is part of the [Atarus offensive security tool suite](https://github.com/atarus-security):
 
-- [atarus-recon](https://github.com/atarus-security/atarus-recon) — external attack surface reconnaissance
-- [atarus-cloud](https://github.com/atarus-security/atarus-cloud) — AWS and Azure configuration auditor
-- [atarus-phishcheck](https://github.com/atarus-security/atarus-phishcheck) — email security analyzer
-- [atarus-report-kit](https://github.com/atarus-security/atarus-report-kit) — pentest report generator
-- **atarus-webscan** — web application security scanner
+- [atarus-recon](https://github.com/atarus-security/atarus-recon) - external attack surface reconnaissance
+- [atarus-cloud](https://github.com/atarus-security/atarus-cloud) - AWS and Azure configuration auditor
+- [atarus-phishcheck](https://github.com/atarus-security/atarus-phishcheck) - email security analyzer
+- [atarus-report-kit](https://github.com/atarus-security/atarus-report-kit) - pentest report generator
+- **atarus-webscan** - web application security scanner
 
-All tools share the same scope validator, output format, and report styling.
+The Python tools share the same CLI conventions (`--only`, `--skip`, `--format`) and report styling.
+
+## Testing
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests run the modules against a throwaway HTTP server on 127.0.0.1 and use only the standard library. GitHub Actions runs them on every push. `constraints.txt` records the dependency versions they last passed with.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) to report a vulnerability. Only scan applications you own or are authorized in writing to test.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
 
 ## About Atarus
 
