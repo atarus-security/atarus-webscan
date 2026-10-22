@@ -1,12 +1,15 @@
 """PDF report generation via WeasyPrint"""
 import os
-from weasyprint import HTML
 from atarus_webscan.reports import html as html_report
 from atarus_webscan.models import ScanResult
 from atarus_webscan.scope import ScopeValidator
 
 
 def generate(result: ScanResult, output_dir: str, existing_html_path: str = None) -> str:
+    # Imported here so the CLI still runs (HTML/JSON) on hosts without the
+    # Pango system libraries WeasyPrint needs. Only PDF export requires them.
+    from weasyprint import HTML
+
     os.makedirs(output_dir, exist_ok=True)
 
     if existing_html_path and os.path.exists(existing_html_path):

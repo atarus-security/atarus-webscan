@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>atarus-webscan | {{ result.target }}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #060606; color: #e0e0e0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 40px 20px; }
+  .container { max-width: 960px; margin: 0 auto; }
+  .header { border-bottom: 2px solid #D4263E; padding-bottom: 24px; margin-bottom: 24px; }
+  .header h1 { font-size: 28px; font-weight: 600; color: #fff; letter-spacing: 1px; }
+  .header h1 span { color: #D4263E; }
+  .header .subtitle { font-size: 14px; color: #888; margin-top: 4px; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat-card { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 16px; text-align: center; }
+  .stat-card .number { font-size: 28px; font-weight: 700; color: #D4263E; }
+  .stat-card .label { font-size: 11px; color: #888; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+  .section-title { font-size: 16px; font-weight: 600; color: #fff; margin: 28px 0 12px; }
+  .scan-info { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 20px; font-size: 14px; }
+  .scan-info table { width: 100%; border-collapse: collapse; }
+  .scan-info td { padding: 6px 0; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  .scan-info td:first-child { color: #888; width: 180px; }
+  .risk-badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .sev-critical { background: #450a0a; color: #fca5a5; border: 1px solid #dc2626; }
+  .sev-high { background: #431407; color: #fdba74; }
+  .sev-medium { background: #422006; color: #fcd34d; }
+  .sev-low { background: #1e293b; color: #93c5fd; }
+  .sev-info, .sev-clean { background: #052e16; color: #86efac; }
+  .finding { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; }
+  .finding-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .finding-title { font-size: 15px; font-weight: 600; color: #fff; }
+  .finding-meta { font-size: 11px; color: #888; font-family: 'Courier New', monospace; margin-bottom: 8px; word-break: break-all; }
+  .finding-body { font-size: 13px; color: #ccc; }
+  .finding-body .label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-top: 8px; }
+  .evidence { background: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 4px; padding: 8px 10px; font-family: 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  .tech-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .tech-card { background: #111; border: 1px solid #1a1a1a; border-radius: 8px; padding: 12px 16px; }
+  .tech-card .name { color: #fff; font-weight: 600; }
+  .tech-card .meta { color: #888; font-size: 12px; }
+  table.headers { width: 100%; border-collapse: collapse; font-size: 13px; background: #111; border: 1px solid #1a1a1a; border-radius: 8px; }
+  table.headers th, table.headers td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+  table.headers th { color: #888; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .ok { color: #86efac; }
+  .bad { color: #fca5a5; }
+  .empty { color: #666; font-style: italic; font-size: 13px; padding: 12px 0; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #1a1a1a; font-size: 12px; color: #666; text-align: center; }
+  @media (max-width: 700px) { .summary, .tech-grid { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>atarus<span>-</span>webscan</h1>
+    <div class="subtitle">Web application scan report for {{ result.target }}</div>
+  </div>
+
+  {% set sev_order = ['critical', 'high', 'medium', 'low', 'info'] %}
+  <div class="summary">
+    <div class="stat-card"><div class="number">{{ result.risk_score }}</div><div class="label">Risk score</div></div>
+    <div class="stat-card"><div class="number">{{ result.findings | length }}</div><div class="label">Findings</div></div>
+    <div class="stat-card"><div class="number">{{ result.findings | selectattr('severity', 'in', ['critical', 'high']) | list | length }}</div><div class="label">Critical + high</div></div>
+    <div class="stat-card"><div class="number">{{ result.technologies | length }}</div><div class="label">Technologies</div></div>
+  </div>
+
+  <div class="scan-info">
+    <table>
+      <tr><td>Target</td><td>{{ result.target }}</td></tr>
+      <tr><td>Risk</td><td><span class="risk-badge sev-{{ result.risk_level or 'info' }}">{{ result.risk_level or 'unrated' }}</span></td></tr>
+      <tr><td>Site type</td><td>{{ result.site_type or 'unknown' }}</td></tr>
+      <tr><td>Framework</td><td>{{ result.framework or 'not detected' }}</td></tr>
+      <tr><td>Server</td><td>{{ result.server or 'not disclosed' }}</td></tr>
+      <tr><td>Methods allowed</td><td>{{ result.methods_allowed | join(', ') if result.methods_allowed else 'not tested' }}</td></tr>
+      <tr><td>404 baseline</td><td>{% if result.baseline_404_hash %}HTTP {{ result.baseline_404_status }}, hash {{ result.baseline_404_hash }}{% else %}not calibrated{% endif %}</td></tr>
+      <tr><td>Started</td><td>{{ result.started_at }}</td></tr>
+      <tr><td>Completed</td><td>{{ result.finished_at }}</td></tr>
+    </table>
+  </div>
+
+  <div class="section-title">Findings</div>
+  {% set ns = namespace(count=0) %}
+  {% for sev in sev_order %}
+    {% for f in result.findings if (f.severity or 'info') | lower == sev %}
+      {% set ns.count = ns.count + 1 %}
+      <div class="finding">
+        <div class="finding-head">
+          <div class="finding-title">{{ f.title }}</div>
+          <span class="risk-badge sev-{{ sev }}">{{ sev }}</span>
+        </div>
+        <div class="finding-meta">{{ f.url }}{% if f.category %} | {{ f.category }}{% endif %}{% if f.owasp_mapping %} | {{ f.owasp_mapping }}{% endif %}{% if f.cve %} | {{ f.cve }}{% endif %}</div>
+        <div class="finding-body">
+          {% if f.description %}<div>{{ f.description }}</div>{% endif %}
+          {% if f.evidence %}<div class="label">Evidence</div><div class="evidence">{{ f.evidence }}</div>{% endif %}
+          {% if f.remediation %}<div class="label">Remediation</div><div>{{ f.remediation }}</div>{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  {% endfor %}
+  {% if ns.count == 0 %}<div class="empty">No findings recorded.</div>{% endif %}
+
+  <div class="section-title">Security headers</div>
+  {% if result.headers %}
+  <table class="headers">
+    <tr><th>Header</th><th>Status</th><th>Value or issue</th></tr>
+    {% for h in result.headers %}
+    <tr>
+      <td>{{ h.header }}</td>
+      <td>{% if h.present and not h.issue %}<span class="ok">present</span>{% elif h.present %}<span class="bad">weak</span>{% else %}<span class="bad">missing</span>{% endif %}</td>
+      <td>{{ h.issue or h.value }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="empty">Header module did not run.</div>{% endif %}
+
+  <div class="section-title">Technologies</div>
+  {% if result.technologies %}
+  <div class="tech-grid">
+    {% for t in result.technologies %}
+    <div class="tech-card"><div class="name">{{ t.name }}{% if t.version %} {{ t.version }}{% endif %}</div><div class="meta">{{ t.category or 'unknown' }} | confidence {{ t.confidence }}</div></div>
+    {% endfor %}
+  </div>
+  {% else %}<div class="empty">No technologies detected.</div>{% endif %}
+
+  <div class="footer">Generated by atarus-webscan | Atarus Offensive Security | Confidential</div>
+</div>
+</body>
+</html>

@@ -12,5 +12,6 @@ output/
 *.html
 *.pdf
 !templates/*.html
+!src/atarus_webscan/templates/*.html
 build*.sh
 .DS_Store

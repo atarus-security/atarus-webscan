@@ -49,17 +49,17 @@ if [[ ":$PATH:" != *":$GOBIN_PATH:"* ]]; then
     export PATH="$PATH:$GOBIN_PATH"
 fi
 
-echo "Installing system tools (unzip)..."
+echo "Installing system tools (unzip, Pango for PDF export)..."
 case "$OS" in
     kali|debian|ubuntu)
         sudo apt-get update -qq 2>&1 | tail -2
-        sudo apt-get install -y unzip 2>&1 | grep -v "is already the newest" | tail -3
+        sudo apt-get install -y unzip libpango-1.0-0 libpangoft2-1.0-0 2>&1 | grep -v "is already the newest" | tail -3
         ;;
     arch)
-        sudo pacman -Sy --noconfirm unzip
+        sudo pacman -Sy --noconfirm unzip pango
         ;;
     fedora|rhel|centos)
-        sudo dnf install -y unzip
+        sudo dnf install -y unzip pango
         ;;
 esac
 echo ""

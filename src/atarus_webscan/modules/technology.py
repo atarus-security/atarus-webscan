@@ -58,7 +58,7 @@ def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResul
                 text=True,
             )
         except subprocess.TimeoutExpired:
-            return ModuleResult(success=False, message="nuclei timed out after 240 seconds")
+            return ModuleResult(success=False, message="nuclei timed out after 90 seconds")
 
         techs = 0
         vulns = 0

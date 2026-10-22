@@ -74,18 +74,6 @@ def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResul
     except requests.RequestException as e:
         return ModuleResult(success=False, message=f"target unreachable: {type(e).__name__}")
 
-    # Quick reachability check
-    try:
-        probe = requests.get(
-            base_url,
-            timeout=4,
-            allow_redirects=False,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
-        )
-    except requests.RequestException as e:
-        return ModuleResult(success=False, message=f"target unreachable: {type(e).__name__}")
-
     baseline = BaselineDetector(base_url)
     baseline.calibrate(verbose=verbose)
 
