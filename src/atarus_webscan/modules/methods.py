@@ -1,17 +1,18 @@
-"""Dangerous HTTP method detection.
+"""HTTP method checks with safe methods only.
 
-Probes the target with each HTTP method and flags methods that should not
-be exposed in production.
+Passive module. Sends one HEAD and one OPTIONS request to the URL the user
+named, confirms those two methods and reads the OPTIONS Allow header. A
+dangerous method that the server announces there is reported as announced,
+not confirmed. Nothing state-changing is sent here: POST, PUT, PATCH,
+DELETE, TRACE and CONNECT belong to the active write_methods module, which
+only sends them to a path the user named with --probe-path.
 """
-import requests
 from atarus_webscan.models import ScanResult, Finding
 from atarus_webscan.runner import ModuleResult
+from atarus_webscan.transport import TransportError
 
 
-METHODS_TO_TEST = [
-    "GET", "POST", "PUT", "DELETE", "PATCH",
-    "OPTIONS", "TRACE", "CONNECT", "HEAD",
-]
+SAFE_METHODS = ["HEAD", "OPTIONS"]
 
 
 DANGEROUS_METHODS = {
@@ -23,82 +24,62 @@ DANGEROUS_METHODS = {
 }
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Probe each HTTP method against the target"""
+def _accepted(status: int) -> bool:
+    """A method counts as accepted when the server did not reject it as a method.
+    401 and 403 mean the route exists behind auth, which still tells us the method is routed."""
+    return status < 400 or status in (401, 403)
 
-    allowed = []
 
-    # Quick reachability check before iterating methods
-    try:
-        probe = requests.get(
-            base_url,
-            timeout=4,
-            allow_redirects=False,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
-        )
-        if probe.status_code == 0:
-            return ModuleResult(success=False, message="target unreachable")
-    except requests.RequestException as e:
-        return ModuleResult(success=False, message=f"target unreachable: {type(e).__name__}")
+def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
+    """Send HEAD and OPTIONS to the named URL and read the Allow header"""
 
-    for method in METHODS_TO_TEST:
+    base_url = client.base_url
+    confirmed = []
+
+    named = client.named_cached()
+    if named is not None and not named.redirect_refused and _accepted(named.status):
+        confirmed.append("GET")
+
+    responses = {}
+    for method in SAFE_METHODS:
         try:
-            resp = requests.request(
-                method,
-                base_url,
-                timeout=4,
-                allow_redirects=False,
-                headers={"User-Agent": "atarus-webscan/0.1.0"},
-                verify=False,
-            )
-
-            if resp.status_code < 400 or resp.status_code in (401, 403):
-                allowed.append(method)
-
-                if method in DANGEROUS_METHODS:
-                    severity, desc = DANGEROUS_METHODS[method]
-                    result.findings.append(Finding(
-                        title=f"{method} method enabled",
-                        severity=severity,
-                        description=desc,
-                        url=base_url,
-                        evidence=f"Server returned HTTP {resp.status_code} for {method}",
-                        remediation=f"Disable {method} method on the server unless explicitly required",
-                        category="methods",
-                        owasp_mapping="A05:2021 Security Misconfiguration",
-                    ))
-
-        except requests.RequestException:
+            responses[method] = client.send(method, base_url)
+        except TransportError as e:
+            if not responses and method == SAFE_METHODS[0]:
+                return ModuleResult(success=False, message=f"target unreachable: {e}")
             continue
+        if _accepted(responses[method].status):
+            confirmed.append(method)
 
-    # OPTIONS Allow header check
-    try:
-        opts_resp = requests.options(
-            base_url,
-            timeout=4,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
-        )
-        allow_header = opts_resp.headers.get("Allow", "") or opts_resp.headers.get("allow", "")
+    announced = []
+    opts = responses.get("OPTIONS")
+    if opts is not None:
+        allow_header = opts.headers.get("Allow", "")
         if allow_header:
-            announced = [m.strip().upper() for m in allow_header.split(",")]
+            announced = [m.strip().upper() for m in allow_header.split(",") if m.strip()]
             for method in announced:
-                if method in DANGEROUS_METHODS and method not in allowed:
+                if method in DANGEROUS_METHODS:
                     severity, desc = DANGEROUS_METHODS[method]
                     result.findings.append(Finding(
                         title=f"{method} method announced via OPTIONS",
                         severity=severity,
-                        description=f"{desc}. Server's OPTIONS Allow header announces {method} is supported.",
+                        description=(
+                            f"{desc}. The server's OPTIONS Allow header announces {method}. "
+                            f"It was announced, not probed: run with --active and --probe-path to confirm it."
+                        ),
                         url=base_url,
                         evidence=f"Allow: {allow_header}",
                         remediation=f"Either disable {method} or remove it from OPTIONS Allow",
                         category="methods",
                         owasp_mapping="A05:2021 Security Misconfiguration",
                     ))
-    except requests.RequestException:
-        pass
 
-    result.methods_allowed = allowed
+    for m in confirmed:
+        if m not in result.methods_allowed:
+            result.methods_allowed.append(m)
+    result.methods_announced = announced
 
-    return ModuleResult(success=True, message=f"{len(allowed)} methods allowed: {', '.join(allowed)}")
+    msg = f"{len(confirmed)} safe methods confirmed: {', '.join(confirmed) or 'none'}"
+    if announced:
+        msg += f"; OPTIONS announces: {', '.join(announced)}"
+    return ModuleResult(success=True, message=msg)

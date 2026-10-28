@@ -15,8 +15,8 @@ SEVERITY_POINTS = {
 }
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Compute a risk score from accumulated findings"""
+def run(result: ScanResult, client=None, verbose: bool = False) -> ModuleResult:
+    """Compute a risk score from accumulated findings. Offline: sends nothing."""
 
     score = 0
     counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}

@@ -4,9 +4,9 @@ Identifies whether the target is an SPA, server-rendered, static, or API,
 and detects the underlying framework via response headers and HTML markers.
 """
 import re
-import requests
 from atarus_webscan.models import ScanResult, Technology
 from atarus_webscan.runner import ModuleResult
+from atarus_webscan.transport import TransportError
 
 
 FRAMEWORK_SIGNATURES = {
@@ -80,22 +80,27 @@ FRAMEWORK_SIGNATURES = {
 }
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Detect site type and framework"""
+def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
+    """Detect site type and framework from the single GET of the named URL.
+
+    Passive module. The response is fetched once by the client and shared
+    with the headers module, so the two together send exactly one GET.
+    """
 
     try:
-        resp = requests.get(
-            base_url,
-            timeout=15,
-            allow_redirects=True,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
+        resp = client.fetch_named()
+    except TransportError as e:
+        return ModuleResult(success=False, message=f"could not reach the named URL: {e}")
+
+    if resp.redirect_refused:
+        return ModuleResult(
+            success=False,
+            message=f"the named URL redirects off-origin to {resp.redirect_to}; not followed. "
+                    f"Rerun with that URL if it is in scope",
         )
-    except requests.RequestException as e:
-        return ModuleResult(success=False, message=f"could not reach target: {type(e).__name__}")
 
     html = resp.text or ""
-    headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+    headers_lower = resp.headers_lower()
 
     # Server detection
     if "server" in headers_lower:
@@ -108,7 +113,7 @@ def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResul
     detected = []
     for fw_name, signatures in FRAMEWORK_SIGNATURES.items():
         for sig in signatures:
-            if _matches_signature(sig, html, headers_lower, resp.cookies):
+            if _matches_signature(sig, html, headers_lower, resp.cookie_names):
                 if fw_name not in detected:
                     detected.append(fw_name)
                 break
@@ -145,6 +150,9 @@ def _detect_site_type(html: str, headers: dict, resp) -> str:
 
     if "json" in content_type:
         return "api"
+
+    if resp.status >= 400:
+        return "minimal"
 
     if not html or len(html) < 200:
         return "minimal"

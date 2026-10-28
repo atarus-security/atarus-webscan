@@ -1,12 +1,19 @@
 """Detection of exposed sensitive files.
 
-Probes for common sensitive paths with smart 404 baseline filtering to
-eliminate false positives from catch-all routes.
+Active module: it sends a request per candidate path, so it runs only behind
+--active, inside --scope and after the confirmation gate.
+
+Each candidate gets a HEAD request first. Only when the server says the path
+is there does a GET follow, and that GET asks for the first 512 bytes with a
+Range header and reads no more than that before closing the connection. A
+candidate secret is never downloaded whole, and the report records that the
+file is present and how large it is, never its content. A smart 404 baseline
+(one capped GET of a random path) filters catch-all routes.
 """
-import requests
 from atarus_webscan.models import ScanResult, Finding
 from atarus_webscan.runner import ModuleResult
 from atarus_webscan.baseline import BaselineDetector
+from atarus_webscan.transport import TransportError, PROBE_READ_LIMIT
 
 
 SENSITIVE_PATHS = [
@@ -59,84 +66,93 @@ SENSITIVE_PATHS = [
 ]
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Probe for exposed sensitive files using baseline filtering"""
+def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
+    """Probe for exposed sensitive files: HEAD first, then a capped GET"""
 
-    # Quick reachability check
-    try:
-        probe = requests.get(
-            base_url,
-            timeout=4,
-            allow_redirects=False,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
-        )
-    except requests.RequestException as e:
-        return ModuleResult(success=False, message=f"target unreachable: {type(e).__name__}")
+    base_url = client.base_url
 
-    baseline = BaselineDetector(base_url)
-    baseline.calibrate(verbose=verbose)
+    baseline = BaselineDetector(client)
+    if not baseline.calibrate(verbose=verbose):
+        return ModuleResult(success=False, message="target unreachable: the baseline request failed")
+    result.baseline_404_hash = baseline.baseline_hash[:16] if baseline.baseline_hash else ""
+    result.baseline_404_status = baseline.baseline_status
 
     found = 0
     filtered = 0
+    heads = 0
+    gets = 0
 
     for path, severity, title, description in SENSITIVE_PATHS:
         url = f"{base_url}/{path}"
 
         try:
-            resp = requests.get(
-                url,
-                timeout=5,
-                allow_redirects=False,
-                headers={"User-Agent": "atarus-webscan/0.1.0"},
-                verify=False,
-            )
-        except requests.RequestException:
+            head = client.head(url)
+        except TransportError:
+            continue
+        heads += 1
+
+        # Absent, or a redirect (typically to a login or marketing page). Not followed.
+        if head.status == 404 or head.is_redirect:
             continue
 
-        # Skip 404s
-        if resp.status_code == 404:
-            continue
-
-        # Skip baseline matches (catch-all 200s)
-        if baseline.matches_baseline(resp):
-            filtered += 1
-            continue
-
-        # Skip redirects to login/marketing pages (typically 302 to the homepage)
-        if resp.status_code in (301, 302, 303, 307, 308):
-            continue
-
-        # Skip empty responses (some servers 200 with no body for unknown routes)
-        if resp.status_code == 200 and len(resp.content) < 50:
-            continue
-
-        if resp.status_code == 200:
-            found += 1
-            result.findings.append(Finding(
-                title=title,
-                severity=severity,
-                description=description,
-                url=url,
-                evidence=f"HTTP {resp.status_code}, {len(resp.content)} bytes",
-                remediation=f"Restrict public access to /{path}",
-                category="dangerous_files",
-                owasp_mapping="A05:2021 Security Misconfiguration",
-            ))
-
-        elif resp.status_code in (401, 403):
-            # Auth-protected paths still indicate the file exists
+        if head.status in (401, 403):
+            # Auth-protected paths still indicate the file exists. No GET is sent.
             if severity in ("critical", "high"):
                 result.findings.append(Finding(
                     title=f"{title} (auth-protected)",
                     severity="low",
                     description=f"{description}. The file appears to exist but requires authentication.",
                     url=url,
-                    evidence=f"HTTP {resp.status_code}",
+                    evidence=f"HTTP {head.status} to HEAD",
                     remediation=f"Confirm /{path} is intentionally exposed and access controls are correct",
                     category="dangerous_files",
                     owasp_mapping="A05:2021 Security Misconfiguration",
                 ))
+            continue
 
-    msg = f"{found} sensitive paths exposed, {filtered} false positives filtered"
+        # HEAD said 2xx (or the server does not take HEAD: 405, 501). Ask for
+        # the first bytes only, enough to tell the file from the 404 page.
+        if not (200 <= head.status < 300 or head.status in (405, 501)):
+            continue
+
+        try:
+            resp = client.get_capped(url)
+        except TransportError:
+            continue
+        gets += 1
+
+        if resp.status == 404 or resp.is_redirect:
+            continue
+
+        if resp.status in (401, 403):
+            continue
+
+        if resp.status not in (200, 206):
+            continue
+
+        if baseline.matches_baseline(resp):
+            filtered += 1
+            continue
+
+        # Some servers answer 200 with no body for unknown routes.
+        size = resp.declared_length if resp.declared_length is not None else len(resp.body)
+        if size < 50:
+            continue
+
+        found += 1
+        result.findings.append(Finding(
+            title=title,
+            severity=severity,
+            description=description,
+            url=url,
+            evidence=(
+                f"HTTP {resp.status}, {resp.size_text()}. Presence and size only: the scanner asked for the "
+                f"first {PROBE_READ_LIMIT} bytes (Range) and stored none of the content."
+            ),
+            remediation=f"Restrict public access to /{path}",
+            category="dangerous_files",
+            owasp_mapping="A05:2021 Security Misconfiguration",
+        ))
+
+    msg = f"{found} sensitive paths exposed, {filtered} false positives filtered ({heads} HEAD, {gets} capped GET)"
     return ModuleResult(success=True, message=msg)

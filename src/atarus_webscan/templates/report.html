@@ -66,17 +66,50 @@
 
   <div class="scan-info">
     <table>
-      <tr><td>Target</td><td>{{ result.target }}</td></tr>
+      <tr><td>Target</td><td>{{ result.named_url or result.target }}</td></tr>
+      <tr><td>Mode</td><td>{{ result.mode }}{% if result.mode == 'passive' %} (one GET, one HEAD and one OPTIONS to the named URL; nothing else was sent){% endif %}</td></tr>
+      {% if result.active_scope %}<tr><td>Active scope</td><td>{{ result.active_scope | join(', ') }}</td></tr>{% endif %}
+      {% if result.confirmation %}<tr><td>Confirmation</td><td>{{ result.confirmation }}</td></tr>{% endif %}
+      {% if result.probe_paths %}<tr><td>Paths probed with state-changing methods</td><td>{{ result.probe_paths | join(', ') }}</td></tr>{% endif %}
+      <tr><td>TLS verification</td><td>{% if result.insecure %}<span class="bad">off (--insecure)</span>{% else %}on{% endif %}</td></tr>
+      <tr><td>Requests sent</td><td>{% if result.requests_sent %}{% for m, n in result.requests_sent | dictsort %}{{ m }} {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
       <tr><td>Risk</td><td><span class="risk-badge sev-{{ result.risk_level or 'info' }}">{{ result.risk_level or 'unrated' }}</span></td></tr>
       <tr><td>Site type</td><td>{{ result.site_type or 'unknown' }}</td></tr>
       <tr><td>Framework</td><td>{{ result.framework or 'not detected' }}</td></tr>
       <tr><td>Server</td><td>{{ result.server or 'not disclosed' }}</td></tr>
-      <tr><td>Methods allowed</td><td>{{ result.methods_allowed | join(', ') if result.methods_allowed else 'not tested' }}</td></tr>
+      <tr><td>Methods confirmed</td><td>{{ result.methods_allowed | join(', ') if result.methods_allowed else 'not tested' }}</td></tr>
+      <tr><td>Methods announced (OPTIONS Allow)</td><td>{{ result.methods_announced | join(', ') if result.methods_announced else 'none' }}</td></tr>
       <tr><td>404 baseline</td><td>{% if result.baseline_404_hash %}HTTP {{ result.baseline_404_status }}, hash {{ result.baseline_404_hash }}{% else %}not calibrated{% endif %}</td></tr>
       <tr><td>Started</td><td>{{ result.started_at }}</td></tr>
       <tr><td>Completed</td><td>{{ result.finished_at }}</td></tr>
+      <tr><td>Tool</td><td>atarus-webscan v{{ version }}</td></tr>
     </table>
   </div>
+
+  {% if result.modules_not_run %}
+  <div class="section-title">Checks not made</div>
+  <table class="headers">
+    <tr><th>Module</th><th>Why it did not run</th></tr>
+    {% for m in result.modules_not_run %}<tr><td>{{ m.name }} ({{ m.module }})</td><td>{{ m.reason }}</td></tr>{% endfor %}
+  </table>
+  <div class="empty">A check that was not made says nothing about the target. Do not read this report as clean for these modules.</div>
+  {% endif %}
+
+  {% if result.out_of_scope %}
+  <div class="section-title">Out of scope, not probed</div>
+  <table class="headers">
+    <tr><th>Host</th><th>Address</th></tr>
+    {% for h in result.out_of_scope %}<tr><td>{{ h.hostname }}</td><td>{{ h.ip }}</td></tr>{% endfor %}
+  </table>
+  {% endif %}
+
+  {% if result.refused_redirects %}
+  <div class="section-title">Redirects refused</div>
+  <table class="headers">
+    <tr><th>From</th><th>To (off the named origin, not followed)</th><th>Status</th></tr>
+    {% for r in result.refused_redirects %}<tr><td>{{ r.from }}</td><td>{{ r.to }}</td><td>{{ r.status }}</td></tr>{% endfor %}
+  </table>
+  {% endif %}
 
   <div class="section-title">Findings</div>
   {% set ns = namespace(count=0) %}
@@ -97,7 +130,7 @@
       </div>
     {% endfor %}
   {% endfor %}
-  {% if ns.count == 0 %}<div class="empty">No findings recorded.</div>{% endif %}
+  {% if ns.count == 0 %}<div class="empty">No findings recorded{% if result.modules_not_run %} by the modules that ran; see "Checks not made" above{% endif %}.</div>{% endif %}
 
   <div class="section-title">Security headers</div>
   {% if result.headers %}

@@ -24,4 +24,6 @@ Out of scope: third-party tools this project calls or downloads (for example nuc
 
 ## Using this tool
 
-atarus-webscan sends active requests, including PUT, DELETE and TRACE probes. Only run it against applications you own or are authorized in writing to test.
+atarus-webscan is passive by default: a plain run sends one GET, one HEAD and one OPTIONS to the URL you named and nothing else. Active checks (sensitive-file probing, the state-changing method probes POST, PUT, PATCH, DELETE, TRACE and CONNECT, nuclei) run only with `--active`, against a host inside a `--scope` you provide, after you type `yes` on the terminal (or pass `--yes` together with `--scope` for scripted runs). State-changing methods go only to paths you name with `--probe-path`. Only use `--active` against applications you own or are authorized in writing to test.
+
+Treat as a security bug and report it: any run that sends more than those three safe requests without `--active`, any request to a scheme, host, port or path outside the named origin (including a followed off-origin redirect), any state-changing method sent to a path the user did not name, any sensitive-file read beyond 512 bytes or any report that stores a candidate secret's content, any way to pass the confirmation gate other than typing `yes` on the terminal or the documented `--yes` flag, a run that skips TLS verification without `--insecure`, a report that reads as clean for a check that did not run, and any network destination not listed in the README's network table.

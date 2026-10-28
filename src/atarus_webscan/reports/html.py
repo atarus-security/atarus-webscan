@@ -1,6 +1,7 @@
 """HTML report generation"""
 import os
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from atarus_webscan import __version__
 from atarus_webscan.models import ScanResult
 from atarus_webscan.scope import ScopeValidator
 
@@ -28,7 +29,7 @@ def generate(result: ScanResult, output_dir: str) -> str:
         autoescape=select_autoescape(default=True, default_for_string=True),
     )
     template = env.get_template("report.html")
-    html_content = template.render(result=result)
+    html_content = template.render(result=result, version=__version__)
 
     safe_target = ScopeValidator.sanitize_filename(result.target)
     output_path = os.path.join(output_dir, f"atarus-webscan-{safe_target}.html")

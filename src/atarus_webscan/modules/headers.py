@@ -2,9 +2,9 @@
 
 Probes the target for security headers and grades each one.
 """
-import requests
 from atarus_webscan.models import ScanResult, Finding, HeaderAnalysis
 from atarus_webscan.runner import ModuleResult
+from atarus_webscan.transport import TransportError
 
 
 SECURITY_HEADERS = {
@@ -50,21 +50,26 @@ VERSION_DISCLOSING_HEADERS = [
 ]
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Probe for security headers and analyze each one"""
+def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
+    """Analyze the security headers of the single GET of the named URL.
+
+    Passive module. Sends no request of its own when discover has already
+    fetched the named URL; the response is shared through the client.
+    """
 
     try:
-        resp = requests.get(
-            base_url,
-            timeout=10,
-            allow_redirects=True,
-            headers={"User-Agent": "atarus-webscan/0.1.0"},
-            verify=False,
-        )
-    except requests.RequestException as e:
-        return ModuleResult(success=False, message=f"could not fetch headers: {type(e).__name__}")
+        resp = client.fetch_named()
+    except TransportError as e:
+        return ModuleResult(success=False, message=f"could not fetch headers: {e}")
 
-    headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+    if resp.redirect_refused:
+        return ModuleResult(
+            success=False,
+            message=f"the named URL redirects off-origin to {resp.redirect_to}; headers not analyzed",
+        )
+
+    base_url = resp.url
+    headers_lower = resp.headers_lower()
 
     missing = 0
     present = 0

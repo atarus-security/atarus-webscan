@@ -1,7 +1,13 @@
 """Technology fingerprinting and CVE matching via nuclei.
 
-Wraps the nuclei binary to run technology-detection and CVE templates,
-parses results into Atarus Finding objects.
+Active module: nuclei sends many requests to the named URL, so it runs only
+behind --active, inside --scope and after the confirmation gate.
+
+Wraps the nuclei binary to run technology-detection and CVE templates and
+parses results into Atarus Finding objects. nuclei is given the named URL
+only, with redirects and interactsh (out-of-band callbacks to a third-party
+server) disabled. A missing binary, a non-zero exit or a timeout is
+reported as the check not having run, never as a clean result.
 """
 import json
 import os
@@ -12,9 +18,14 @@ from atarus_webscan.models import ScanResult, Finding, Technology
 from atarus_webscan.runner import ModuleResult
 
 
-def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResult:
-    """Run nuclei technology and CVE detection against the target"""
+# How much of nuclei's stderr is kept for the not-run reason.
+STDERR_TAIL = 200
 
+
+def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
+    """Run nuclei technology and CVE detection against the named URL"""
+
+    base_url = client.base_url
     nuclei_path = _find_nuclei()
     if not nuclei_path:
         return ModuleResult(
@@ -45,20 +56,33 @@ def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResul
             "-max-host-error", "3",
             "-timeout", "8",
             "-rate-limit", "60",
+            # No interactsh: no out-of-band callbacks through a third-party server.
+            "-ni",
+            # Stay on the named origin: nuclei must not follow redirects elsewhere.
+            "-disable-redirects",
         ]
 
         if not verbose:
             cmd.extend(["-no-color"])
 
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 cmd,
                 timeout=90,
                 capture_output=True,
                 text=True,
             )
         except subprocess.TimeoutExpired:
-            return ModuleResult(success=False, message="nuclei timed out after 90 seconds")
+            return ModuleResult(success=False, message="nuclei timed out after 90 seconds; check not completed")
+        except OSError as e:
+            return ModuleResult(success=False, message=f"nuclei could not be started: {type(e).__name__}")
+
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")[-STDERR_TAIL:]
+            return ModuleResult(
+                success=False,
+                message=f"nuclei exited with code {proc.returncode}; check not completed. {tail}".strip(),
+            )
 
         techs = 0
         vulns = 0
@@ -120,7 +144,7 @@ def run(result: ScanResult, base_url: str, verbose: bool = False) -> ModuleResul
                     vulns += 1
 
         except FileNotFoundError:
-            pass
+            return ModuleResult(success=False, message="nuclei wrote no output file; check not completed")
 
         msg = f"{techs} technologies detected, {vulns} vulnerabilities"
         return ModuleResult(success=True, message=msg)
