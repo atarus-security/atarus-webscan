@@ -9,10 +9,12 @@ import contextlib
 import io
 import json
 import os
+import select
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -24,7 +26,7 @@ from atarus_webscan.models import ScanResult
 from atarus_webscan.modules import technology, dangerous_files, discover, headers
 from atarus_webscan.runner import ModuleRunner, ModuleResult
 from atarus_webscan.scope import ActiveScope, ScopeValidator
-from atarus_webscan.transport import Client, OffOriginError, PROBE_READ_LIMIT
+from atarus_webscan.transport import Client, OffOriginError, PROBE_READ_LIMIT, PAGE_READ_LIMIT, READ_CHUNK
 from atarus_webscan.reports import html
 
 
@@ -73,13 +75,33 @@ class _FakeRaw:
     def __init__(self, body, reads):
         self._body = body
         self._reads = reads
+        self._wire = 0
 
     def read(self, amt=None, decode_content=None):
         self._reads.append(amt)
         if amt is None:
             raise AssertionError("an unbounded read was attempted")
         chunk, self._body = self._body[:amt], self._body[amt:]
+        self._wire += len(chunk)
         return chunk
+
+    def tell(self):
+        # urllib3 reports the bytes pulled off the wire; here nothing is encoded.
+        return self._wire
+
+
+class _ExpandingRaw(_FakeRaw):
+    """A body that decodes to many times what came off the wire, like a gzip bomb."""
+
+    # 8 KiB off the wire becomes 512 KiB, so the 2 MiB cap takes several reads.
+    RATIO = 64
+
+    def read(self, amt=None, decode_content=None):
+        self._reads.append(amt)
+        if amt is None:
+            raise AssertionError("an unbounded read was attempted")
+        self._wire += amt
+        return b"\0" * (amt * self.RATIO)
 
 
 class _FakeResponse:
@@ -398,6 +420,69 @@ class SensitiveFileTests(unittest.TestCase):
         self.assertEqual([f.title for f in r.findings], ["Environment file exposed (auth-protected)"])
 
 
+class DecodedCapTests(unittest.TestCase):
+    """The page cap is on decoded bytes: an expanding body is cut at the cap."""
+
+    def test_expanding_body_is_cut_at_the_decoded_cap_and_read_in_chunks(self):
+        reads = []
+
+        class Bomb(FakeTransport):
+            def __call__(self, method, url, headers):
+                self.sent.append((method, url, dict(headers)))
+                resp = _FakeResponse(200, {"Content-Encoding": "gzip", "Content-Length": "4096"}, b"", reads)
+                resp.raw = _ExpandingRaw(b"", reads)
+                return resp
+
+        client = Client(ScopeValidator(NAMED), rate_limit=0)
+        with _patched_transport(Bomb({})):
+            fetched = client.get(NAMED)
+        self.assertEqual(len(fetched.body), PAGE_READ_LIMIT)
+        self.assertTrue(fetched.truncated)
+        self.assertTrue(all(amt <= READ_CHUNK for amt in reads), reads)
+        self.assertEqual(len(reads), PAGE_READ_LIMIT // (READ_CHUNK * _ExpandingRaw.RATIO),
+                         "the body is read chunk by chunk until the decoded cap is reached")
+
+    def test_short_body_is_not_marked_truncated(self):
+        transport = FakeTransport({("GET", NAMED): (200, {"Content-Type": "text/html"}, PAGE)})
+        client = Client(ScopeValidator(NAMED), rate_limit=0)
+        with _patched_transport(transport):
+            fetched = client.get(NAMED)
+        self.assertEqual(fetched.body, PAGE)
+        self.assertFalse(fetched.truncated)
+
+
+class TerminalEscapeTests(unittest.TestCase):
+    """Text that came from the target is inert on the terminal and in the report."""
+
+    def test_off_origin_location_cannot_drive_the_terminal(self):
+        hostile = "https://other.test/[bold red]owned[/]\x1b]0;pwned\x07"
+        transport = FakeTransport({("GET", NAMED): (302, {"Location": hostile}, b"")})
+        result = ScanResult(target="lab.test:8443", named_url=NAMED)
+        client = Client(ScopeValidator(NAMED), rate_limit=0)
+        console = _quiet_console()
+        runner = ModuleRunner(console, result, client)
+        runner.register("Discovery", "discover", discover.run, active=False)
+        runner.register("Headers", "headers", headers.run, active=False)
+        with _patched_transport(transport):
+            runner.run()
+        text = console.file.getvalue()
+        self.assertIn("[bold red]owned[/]", text, "markup from the target is shown, not interpreted")
+        self.assertIn("\\x1b]0;pwned\\x07", text, "control characters are shown as escapes")
+        for ch in text:
+            self.assertTrue(ord(ch) >= 0x20 or ch == "\n", f"control character reached the terminal: {ch!r}")
+        reasons = [m["reason"] for m in result.modules_not_run]
+        self.assertEqual(len(reasons), 2)
+        for reason in reasons:
+            self.assertIn("\\x1b]0;pwned\\x07", reason, "the report carries the inert form too")
+
+    def test_safe_text_matches_the_vendored_behaviour(self):
+        self.assertEqual(scope_module.safe_text("nginx\x1b[2J\x1b]0;owned\x07"), "nginx\\x1b[2J\\x1b]0;owned\\x07")
+        self.assertEqual(scope_module.safe_text("a\r\nb\tc"), "a b c")
+        self.assertEqual(scope_module.safe_text("x\x7fy\x9bz"), "x\\x7fy\\x9bz")
+        self.assertEqual(scope_module.safe_text("abcdefghij", 5), "abcde [cut]")
+        self.assertEqual(scope_module.safe_text(None), "")
+
+
 class ActiveScopeTests(unittest.TestCase):
     def test_entry_forms(self):
         s = ActiveScope(["app.lab.test", "*.corp.test", "203.0.113.7", "198.51.100.0/24", "https://Portal.lab.test:8443/x"])
@@ -632,6 +717,13 @@ class NucleiTests(unittest.TestCase):
         self.assertIn("-nope", res.message)
         self.assertEqual(r.findings, [])
 
+    def test_stderr_tail_is_made_inert(self):
+        res, _, _ = self._run(1, stderr="[FTL] target said [red]hi[/]\x1b[2J\nsecond line")
+        self.assertFalse(res.success)
+        self.assertIn("[red]hi[/]\\x1b[2J second line", res.message)
+        for ch in res.message:
+            self.assertGreaterEqual(ord(ch), 0x20)
+
     def test_absent_nuclei_is_recorded_in_the_report(self):
         transport = FakeTransport(_lab_routes())
         with mock.patch.object(technology, "_find_nuclei", return_value=""):
@@ -665,6 +757,119 @@ class PassiveReportTests(unittest.TestCase):
         self.assertIn("GET 1, HEAD 1, OPTIONS 1", content)
         self.assertIn("atarus-webscan v0.2.0", content)
         self.assertNotIn("No findings recorded.", content)
+
+
+def _pty_supported():
+    try:
+        import pty  # noqa: F401
+    except ImportError:
+        return False
+    return hasattr(os, "fork") and sys.platform != "win32"
+
+
+class PseudoTerminalGateTests(unittest.TestCase):
+    """The gate on a real terminal. The child of pty.fork has the pseudo-terminal
+    as its controlling terminal, so /dev/tty is the real path here, not a file
+    standing in for it; a regression in how the terminal is opened (the
+    0.2.0 r+ bug) fails these tests."""
+
+    PROMPT_MARK = b"Type yes to"
+    DEADLINE = 30
+
+    def _in_pty(self, child, answer):
+        """Run child() in a pty.fork child, answer the prompt, return (output, exit code).
+
+        child() returns the text the child prints after the prompt was answered."""
+        import pty
+        try:
+            pid, fd = pty.fork()
+        except OSError as e:
+            self.skipTest(f"pseudo-terminal not available: {e}")
+        if pid == 0:
+            code = 3
+            try:
+                text = child()
+                os.write(1, ("\nRESULT=" + text + "\n").encode("utf-8", "replace"))
+                code = 0
+            except BaseException as e:  # noqa: BLE001
+                try:
+                    os.write(1, f"\nCHILD ERROR {e!r}\n".encode("utf-8", "replace"))
+                except OSError:
+                    pass
+            finally:
+                os._exit(code)
+
+        out = b""
+        answered = False
+        status = None
+        deadline = time.time() + self.DEADLINE
+        try:
+            while time.time() < deadline:
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        break  # EIO once the child has closed its side (Linux)
+                    if not chunk:
+                        break  # EOF (macOS)
+                    out += chunk
+                    if not answered and self.PROMPT_MARK in out:
+                        os.write(fd, answer.encode() + b"\n")
+                        answered = True
+                    continue
+                done, st = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    status = st
+                    while True:
+                        ready, _, _ = select.select([fd], [], [], 0.2)
+                        if not ready:
+                            break
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        out += chunk
+                    break
+            else:
+                os.kill(pid, 9)
+                self.fail(f"child did not finish in {self.DEADLINE}s; output so far: {out!r}")
+            if status is None:
+                _, status = os.waitpid(pid, 0)
+        finally:
+            os.close(fd)
+        return out.decode("utf-8", "replace"), os.waitstatus_to_exitcode(status)
+
+    @unittest.skipUnless(_pty_supported(), "needs a POSIX pseudo-terminal")
+    def test_read_tty_line_reads_from_the_real_controlling_terminal(self):
+        def child():
+            available = scope_module.tty_available()
+            line = scope_module.read_tty_line("Type yes to continue: ")
+            return f"available={available} line={line!r}"
+
+        for answer in ("yes", "no"):
+            out, code = self._in_pty(child, answer)
+            self.assertEqual(code, 0, out)
+            self.assertIn("Type yes to continue:", out, "the prompt must be written to the terminal")
+            self.assertIn(f"RESULT=available=True line={answer!r}", out)
+
+    @unittest.skipUnless(_pty_supported(), "needs a POSIX pseudo-terminal")
+    def test_gate_opens_on_yes_and_blocks_on_no_typed_on_a_terminal(self):
+        def child():
+            runner, probe = _make_runner(active=True, assume_yes=False)
+            with _patched_transport(FakeTransport({})):
+                result = runner.run()
+            return f"confirmation={result.confirmation!r} probed={probe.calls} not_run={[m['module'] for m in result.modules_not_run]!r}"
+
+        out, code = self._in_pty(child, "yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("RESULT=confirmation='typed yes on the terminal' probed=2 not_run=[]", out)
+
+        out, code = self._in_pty(child, "no")
+        self.assertEqual(code, 0, out)
+        self.assertIn("RESULT=confirmation='' probed=0 not_run=['probe', 'probe2']", out)
 
 
 if __name__ == "__main__":

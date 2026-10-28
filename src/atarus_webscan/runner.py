@@ -2,10 +2,22 @@
 import traceback
 from dataclasses import dataclass
 from rich.console import Console
+from rich.markup import escape
 
-from atarus_webscan.scope import read_tty_line, resolve_host
+from atarus_webscan.scope import read_tty_line, resolve_host, safe_text
 
 CONFIRM_WORD = "yes"
+
+
+def shown(text) -> str:
+    """Target-derived text made inert for the terminal.
+
+    Control, format and separator characters become visible escapes
+    (safe_text) and rich markup brackets are neutralised (escape), so a
+    Location header, a server banner or nuclei's stderr cannot style, clear
+    or retitle the operator's terminal.
+    """
+    return escape(safe_text(text))
 
 
 @dataclass
@@ -67,7 +79,7 @@ class ModuleRunner:
 
     def _not_run(self, module: dict, reason: str):
         self.result.modules_not_run.append({"module": module["key"], "name": module["name"], "reason": reason})
-        self.console.print(f"  [dim]not run[/dim] [cyan]{module['name']}[/cyan]: {reason}")
+        self.console.print(f"  [dim]not run[/dim] [cyan]{escape(module['name'])}[/cyan]: {shown(reason)}")
 
     def _confirm_active(self, active_modules: list) -> bool:
         """The confirmation gate. Runs once, before the first active request.
@@ -127,7 +139,7 @@ class ModuleRunner:
 
     def run_module(self, name: str, fn, *args, **kwargs) -> ModuleResult:
         """Execute a module function with error handling and progress."""
-        with self.console.status(f"[cyan]{name}[/cyan]"):
+        with self.console.status(f"[cyan]{escape(name)}[/cyan]"):
             try:
                 result = fn(*args, **kwargs)
 
@@ -135,18 +147,18 @@ class ModuleRunner:
                     result = ModuleResult(success=True, message="completed")
 
                 if result.success:
-                    self.console.print(f"  [green]done[/green] {result.message}")
+                    self.console.print(f"  [green]done[/green] {shown(result.message)}")
                 else:
-                    self.console.print(f"  [yellow]warn[/yellow] {result.message}")
+                    self.console.print(f"  [yellow]not run[/yellow] {shown(result.message)}")
 
                 return result
             except Exception as e:
                 error_type = type(e).__name__
                 error_msg = str(e)
-                self.console.print(f"  [red]error[/red] {error_type}: {error_msg}")
+                self.console.print(f"  [red]error[/red] {error_type}: {shown(error_msg)}")
 
                 if self.verbose:
-                    self.console.print(f"[red]{traceback.format_exc()}[/red]")
+                    self.console.print(f"[red]{escape(traceback.format_exc())}[/red]")
 
                 return ModuleResult(
                     success=False,

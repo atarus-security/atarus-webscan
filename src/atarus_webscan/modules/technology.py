@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 from atarus_webscan.models import ScanResult, Finding, Technology
 from atarus_webscan.runner import ModuleResult
+from atarus_webscan.scope import safe_text
 
 
 # How much of nuclei's stderr is kept for the not-run reason.
@@ -78,7 +79,8 @@ def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
             return ModuleResult(success=False, message=f"nuclei could not be started: {type(e).__name__}")
 
         if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")[-STDERR_TAIL:]
+            # safe_text: nuclei's stderr echoes target data; keep it inert.
+            tail = safe_text(proc.stderr or proc.stdout or "")[-STDERR_TAIL:]
             return ModuleResult(
                 success=False,
                 message=f"nuclei exited with code {proc.returncode}; check not completed. {tail}".strip(),

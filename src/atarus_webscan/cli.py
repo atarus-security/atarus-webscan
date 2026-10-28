@@ -10,7 +10,7 @@ from atarus_webscan import __version__
 from atarus_webscan.models import ScanResult
 from atarus_webscan.scope import ScopeValidator, ActiveScope, tty_available
 from atarus_webscan.transport import Client
-from atarus_webscan.runner import ModuleRunner
+from atarus_webscan.runner import ModuleRunner, shown
 from atarus_webscan.modules import discover, headers, methods, dangerous_files, write_methods, technology, risk
 from atarus_webscan.reports import html as html_report
 from atarus_webscan.reports import json_export
@@ -198,8 +198,8 @@ def main(target, output, fmt, rate_limit, only, skip, active, scope_spec, assume
         console.print(f"  Redirects refused (off-origin): {len(result.refused_redirects)}")
     if result.insecure:
         console.print("  TLS verification: OFF (--insecure)")
-    console.print(f"  Site type: {result.site_type or 'unknown'}")
-    console.print(f"  Framework: {result.framework or 'not detected'}")
+    console.print(f"  Site type: {shown(result.site_type or 'unknown')}")
+    console.print(f"  Framework: {shown(result.framework or 'not detected')}")
     console.print(f"  Findings: {len(result.findings)}")
     console.print(f"  Technologies: {len(result.technologies)}")
     console.print(f"  Risk: {result.risk_level or 'unrated'} ({result.risk_score}/100)")

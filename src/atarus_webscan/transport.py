@@ -7,8 +7,13 @@ Every module sends through a Client. The Client:
 - never lets the HTTP library follow a redirect; same-origin redirects are
   followed only when the caller asks, up to MAX_REDIRECTS hops, and an
   off-origin redirect is recorded and returned as is;
-- reads bodies only up to a caller-given limit and closes the connection,
-  so a candidate secret is never downloaded whole;
+- reads bodies only up to a caller-given limit of decoded bytes, in small
+  chunks, and closes the connection, so a candidate secret is never
+  downloaded whole and a compressed body cannot expand past the cap in
+  memory;
+- ignores the environment: no HTTP_PROXY, no ~/.netrc, so a request cannot
+  leave through a proxy the operator did not name and no stored credential
+  for the named host is sent silently;
 - verifies TLS certificates unless the user passed --insecure;
 - keeps a record of every request sent, for the report and the tests.
 """
@@ -25,7 +30,14 @@ from atarus_webscan import __version__
 USER_AGENT = f"atarus-webscan/{__version__}"
 
 # How much of a page is read for framework detection and header analysis.
-PAGE_READ_LIMIT = 512 * 1024
+# This is a cap on the decoded body, and on the bytes pulled off the wire,
+# whichever is reached first: a gzip body that would expand past it is cut
+# there and marked truncated.
+PAGE_READ_LIMIT = 2 * 1024 * 1024
+
+# Bodies are read in chunks this size, so one read can expand to a bounded
+# amount of memory before the cap is checked again.
+READ_CHUNK = 8 * 1024
 
 # How much of a candidate sensitive file is read: enough to tell it from the
 # 404 page, never enough to be a copy of a secret.
@@ -103,6 +115,42 @@ def _declared_length(headers) -> int:
     return None
 
 
+def _wire_bytes(raw, fallback: int) -> int:
+    """How many bytes have come off the socket so far. urllib3 reports it
+    through tell(); anything else gets the decoded count as an estimate."""
+    tell = getattr(raw, "tell", None)
+    if tell is None:
+        return fallback
+    try:
+        return int(tell())
+    except Exception:
+        return fallback
+
+
+def _read_capped(raw, limit: int) -> tuple:
+    """Read at most `limit` decoded bytes from a response body.
+
+    Reads READ_CHUNK at a time with decoding on, and stops when the decoded
+    body reaches the limit or as many bytes have come off the wire, so a
+    compressed body cannot expand past the cap in memory. Returns
+    (body, truncated); truncated is True when a cap stopped the read before
+    the end of the body was seen.
+    """
+    body = bytearray()
+    while True:
+        want = min(READ_CHUNK, limit - len(body))
+        if want <= 0:
+            break
+        if _wire_bytes(raw, len(body)) >= limit:
+            break
+        chunk = raw.read(want, decode_content=True) or b""
+        if not chunk:
+            return bytes(body), False
+        body += chunk
+    del body[limit:]
+    return bytes(body), True
+
+
 class Client:
     """Sends requests to the named origin and nowhere else."""
 
@@ -116,6 +164,10 @@ class Client:
         self.requests_sent = []
         self.refused_redirects = []
         self._session = requests.Session()
+        # Do not consult the environment: HTTP_PROXY, HTTPS_PROXY, NO_PROXY and
+        # ~/.netrc are ignored, so traffic cannot leave through a proxy the
+        # operator did not name and no stored credential is sent silently.
+        self._session.trust_env = False
         self._named = None
         self._next_send_at = 0.0
 
@@ -149,8 +201,9 @@ class Client:
              extra_headers: dict = None) -> Fetched:
         """Send one request (plus same-origin redirect hops when asked) and return what came back.
 
-        read_limit is the hard cap on body bytes read; 0 reads nothing. The
-        connection is closed as soon as that many bytes are in hand.
+        read_limit is the hard cap on decoded body bytes read, and on bytes
+        pulled off the wire; 0 reads nothing. The body is read in READ_CHUNK
+        pieces and the connection is closed as soon as the cap is reached.
         Raises TransportError when the request fails, OffOriginError when a
         module asks for a URL outside the named origin.
         """
@@ -173,10 +226,8 @@ class Client:
             truncated = False
             try:
                 if read_limit > 0 and method != "HEAD":
-                    body = resp.raw.read(read_limit, decode_content=True) or b""
-                    if len(body) >= read_limit:
-                        # There may be more; we do not look.
-                        truncated = True
+                    # There may be more past the cap; we do not look.
+                    body, truncated = _read_capped(resp.raw, read_limit)
             except (requests.RequestException, OSError, ValueError) as exc:
                 raise TransportError(f"read failed: {type(exc).__name__}") from exc
             finally:
@@ -184,7 +235,10 @@ class Client:
 
             resp_headers = CaseInsensitiveDict(resp.headers)
             declared = _declared_length(resp_headers)
-            if declared is not None and truncated and declared <= len(body):
+            # A declared length is the wire size; it says the body is complete
+            # only when nothing was decoded on the way.
+            encoded = bool((resp_headers.get("Content-Encoding") or "").strip())
+            if declared is not None and truncated and not encoded and declared <= len(body):
                 truncated = False
             try:
                 cookie_names = set(resp.cookies.keys())

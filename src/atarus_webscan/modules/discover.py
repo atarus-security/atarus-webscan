@@ -7,6 +7,7 @@ import re
 from atarus_webscan.models import ScanResult, Technology
 from atarus_webscan.runner import ModuleResult
 from atarus_webscan.transport import TransportError
+from atarus_webscan.scope import safe_text
 
 
 FRAMEWORK_SIGNATURES = {
@@ -95,7 +96,7 @@ def run(result: ScanResult, client, verbose: bool = False) -> ModuleResult:
     if resp.redirect_refused:
         return ModuleResult(
             success=False,
-            message=f"the named URL redirects off-origin to {resp.redirect_to}; not followed. "
+            message=f"the named URL redirects off-origin to {safe_text(resp.redirect_to, 300)}; not followed. "
                     f"Rerun with that URL if it is in scope",
         )
 

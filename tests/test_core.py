@@ -3,6 +3,7 @@
 Modules run against a throwaway HTTP server bound to 127.0.0.1. Nothing
 leaves the machine and no third-party test libraries are needed.
 """
+import gzip
 import http.server
 import os
 import tempfile
@@ -12,12 +13,16 @@ from unittest import mock
 
 from atarus_webscan.models import ScanResult, Finding
 from atarus_webscan.scope import ScopeValidator
-from atarus_webscan.transport import Client
+from atarus_webscan.transport import Client, PAGE_READ_LIMIT, READ_CHUNK
 from atarus_webscan.modules import discover, headers, methods, dangerous_files, write_methods, technology, risk
 from atarus_webscan.reports import html, json_export
 
 INDEX = b"<html><head><title>lab</title></head><body>" + b"x" * 300 + b"<div id='__NEXT_DATA__'></div><script src='/_next/a.js'></script></body></html>"
 FILES = {"/.env": b"DB_PASSWORD=lab-only-not-real\nAPI_KEY=lab-only-not-real\n" * 3}
+
+# A small gzip body that decodes to far more than the page cap.
+BOMB_DECODED_SIZE = 6 * 1024 * 1024
+BOMB = gzip.compress(b"\0" * BOMB_DECODED_SIZE, compresslevel=9)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -48,6 +53,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, INDEX, {"Content-Type": "text/html"})
         if self.path in FILES:
             return self._send(200, FILES[self.path])
+        if self.path == "/bomb":
+            return self._send(200, BOMB, {"Content-Type": "text/html", "Content-Encoding": "gzip"})
         if self.catch_all:
             return self._send(200, b"<html>catch all page " + b"y" * 200 + b"</html>")
         return self._send(404, b"not found")
@@ -177,6 +184,48 @@ class ModuleTests(unittest.TestCase):
         self.assertFalse(res.success)
         self.assertIn("nuclei not found", res.message)
         self.assertEqual(self.srv.seen, [])
+
+
+class TransportTests(unittest.TestCase):
+    """The real transport against a 127.0.0.1 server: decoded cap and environment."""
+
+    def setUp(self):
+        self.server = LabServer()
+        self.addCleanup(self.server.close)
+
+    def test_decoded_body_is_capped_when_a_gzip_body_expands_past_the_limit(self):
+        self.assertLess(len(BOMB), PAGE_READ_LIMIT, "the compressed body itself is small")
+        self.assertGreater(BOMB_DECODED_SIZE, PAGE_READ_LIMIT)
+        client = self.server.client()
+        fetched = client.get(self.server.url + "/bomb")
+        self.assertEqual(fetched.status, 200)
+        self.assertEqual(len(fetched.body), PAGE_READ_LIMIT, "exactly the cap, not the decoded size")
+        self.assertTrue(fetched.truncated, "a declared compressed length must not clear the truncated flag")
+        self.assertIn("at least", fetched.size_text() if fetched.declared_length is None else "at least")
+
+    def test_smaller_caps_apply_to_the_decoded_body_too(self):
+        client = self.server.client()
+        fetched = client.get(self.server.url + "/bomb", read_limit=READ_CHUNK + 100)
+        self.assertEqual(len(fetched.body), READ_CHUNK + 100)
+        self.assertTrue(fetched.truncated)
+
+    def test_plain_bodies_are_read_whole_and_not_marked_truncated(self):
+        client = self.server.client()
+        fetched = client.get(self.server.url + "/")
+        self.assertEqual(fetched.body, INDEX)
+        self.assertFalse(fetched.truncated)
+
+    def test_proxy_environment_is_ignored(self):
+        # 127.0.0.1:9 is closed; if the session honoured the environment the
+        # request would try that proxy and fail instead of reaching the server.
+        env = {"HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
+               "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
+        with mock.patch.dict(os.environ, env):
+            client = self.server.client()
+            self.assertFalse(client._session.trust_env)
+            fetched = client.get(self.server.url + "/")
+        self.assertEqual(fetched.status, 200)
+        self.assertEqual([m for m, p, _ in self.server.seen], ["GET"])
 
 
 class RiskTests(unittest.TestCase):

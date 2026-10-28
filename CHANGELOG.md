@@ -6,6 +6,16 @@ All notable changes to atarus-webscan. v0.1.0 is tagged in git but was never pub
 
 ### Security
 
+- **Target-controlled text is escaped before it reaches the terminal.** The `Location` header of an off-origin redirect (discover, headers) and the tail of nuclei's stderr (technology) were put in module messages that the runner printed as rich markup, so a `[red]` sequence or a control character sent by the target could style, clear or retitle the operator's terminal. `scope.safe_text` (vendored from atarus-phpcheck) replaces control, format and separator characters with visible escapes, and the runner and the CLI summary (site type, framework) print every target-derived string through `rich.markup.escape(safe_text(...))`. The HTML and JSON reports were already escaped.
+
+- **The HTTP session no longer reads proxies or credentials from the environment.** `requests.Session()` honours `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and `~/.netrc` by default, so a scan could leave through a proxy the operator did not name and netrc credentials for the named host would be sent, with nothing in the output saying so. `trust_env` is now off on the session; the README network section says so. There is no proxy option.
+
+- **Body reads are capped on decoded size: 2 MiB, read in 8 KiB chunks.**
+
+  What was wrong: `resp.raw.read(limit, decode_content=True)` capped the compressed bytes pulled from the wire, not the decoded result, so a 512 KiB gzip body could expand to hundreds of megabytes in memory.
+
+  What changed: `Client.send` reads the body in 8 KiB chunks with decoding on and stops once 2 MiB of decoded body are in hand, or that many bytes have come off the wire, whichever comes first; the response is marked truncated and the connection closed. `PAGE_READ_LIMIT` is 2 MiB and is documented as a decoded cap. A declared `Content-Length` no longer clears the truncated flag on a content-encoded response, since it describes the wire size, not the decoded one. The 512-byte sensitive-file cap is unchanged. Tested against a 127.0.0.1 server that serves a gzip body expanding past the cap.
+
 - Fixed: the typed confirmation gate could never open on a real terminal. The terminal was opened in a mode that needs a seekable stream, which a terminal is not, so every interactive active run was refused with the no-terminal error and only --yes worked. The terminal is now opened as a raw descriptor and the prompt is written and read through it; verified on a pseudo-terminal.
 
 - **Passive by default; active checks need `--active`, `--scope` and a typed confirmation.**
@@ -47,6 +57,7 @@ All notable changes to atarus-webscan. v0.1.0 is tagged in git but was never pub
 - `dangerous_files` sent its reachability probe twice.
 
 ### Added
+- Tests: the confirmation gate is exercised on a real pseudo-terminal (`pty.fork`), not a regular file standing in for `/dev/tty`, so a regression in how the terminal is opened fails the suite; the 2 MiB decoded cap is tested with a gzip body that expands past it and with a fake body that expands on every read; the proxy environment is shown to be ignored; a hostile `Location` header and nuclei stderr are shown to be inert on the terminal.
 - MIT LICENSE file (README and pyproject.toml already declared MIT).
 - Offline unit tests (`tests/`), GitHub Actions workflow, `constraints.txt`, SECURITY.md and this changelog. `tests/test_safe_default.py` replaces the HTTP layer with a recording fake and guards the socket layer; it covers the passive default (only GET, HEAD and OPTIONS leave, each once, to the named URL), the 512-byte read cap, refused and followed redirects, port and path preservation, the usage errors, the scope lock, the confirmation gate (blocks without `yes`, cannot be opened from the environment, never reads stdin), `write_methods` reaching only named paths, and the nuclei flags and return-code handling.
 - `--list-modules`, `--active`, `--scope`, `--yes`, `--probe-path` and `--insecure` options. `ScanResult` gained `named_url`, `methods_announced`, `mode`, `active_scope`, `confirmation`, `insecure`, `probe_paths`, `modules_not_run`, `out_of_scope`, `refused_redirects` and `requests_sent`; the HTML report shows them, with "Checks not made", "Out of scope, not probed" and "Redirects refused" sections.

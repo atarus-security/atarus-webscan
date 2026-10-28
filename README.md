@@ -177,7 +177,7 @@ For each candidate path, `dangerous_files` sends a HEAD request first. Only when
 
 | Module | Mode | Destination | What is sent | When |
 |---|---|---|---|---|
-| discover | passive | the named URL | one GET; same-origin redirects followed up to five hops; at most 512 KiB of the body is read | every run |
+| discover | passive | the named URL | one GET; same-origin redirects followed up to five hops; at most 2 MiB of the decoded body is read, in 8 KiB chunks, and a compressed body that would expand past that is cut there and marked truncated | every run |
 | headers | passive | nothing of its own | reuses the discover response (one GET in total when both run; one GET of its own with `--only headers`) | every run |
 | methods | passive | the named URL | one HEAD and one OPTIONS | every run |
 | risk | passive | nothing | nothing, computed offline | every run |
@@ -186,6 +186,10 @@ For each candidate path, `dangerous_files` sends a HEAD request first. Only when
 | technology | active | the named URL | nuclei templates tagged `tech` and `exposure` at low severity and above: many HTTP requests, redirects disabled (`-disable-redirects`), no interactsh callbacks (`-ni`), no certificate verification | `--active` only, after confirmation, when nuclei is installed |
 
 Besides resolving the named host through your system's DNS resolver (needed to connect at all, and repeated before the active confirmation to check the scope), the tool contacts no third party. There are no update checks, no telemetry and no out-of-band callback servers.
+
+The HTTP session ignores the environment: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and `~/.netrc` are not consulted (`trust_env` is off on the `requests` session), so a request cannot leave through a proxy you did not name and no stored credential for the named host is sent silently. There is no proxy option; if a run has to go through one, that is a feature to ask for, not something the environment can switch on without a word in the output.
+
+Text that came from the target (a `Location` header, a server banner, nuclei's stderr) is made inert before it is printed: control and format characters are shown as escapes and rich markup is shown literally, so a hostile response cannot style, clear or retitle your terminal. The HTML and JSON reports escape it as well.
 
 ### Known issues
 
@@ -232,7 +236,7 @@ The Python tools share the same CLI conventions (`--only`, `--skip`, `--format`)
 python -m unittest discover -s tests -v
 ```
 
-The tests are offline and use only the standard library. `tests/test_core.py` runs the modules against a throwaway HTTP server on 127.0.0.1; `tests/test_safe_default.py` replaces the HTTP layer with a recording fake and guards the socket layer, and covers the passive default (only GET, HEAD and OPTIONS leave), the 512-byte cap, refused redirects, port preservation, the `--active` and `--yes` usage errors and the confirmation gate. GitHub Actions runs them on every push. `constraints.txt` records the dependency versions they last passed with.
+The tests are offline and use only the standard library. `tests/test_core.py` runs the modules against a throwaway HTTP server on 127.0.0.1; `tests/test_safe_default.py` replaces the HTTP layer with a recording fake and guards the socket layer, and covers the passive default (only GET, HEAD and OPTIONS leave), the 512-byte cap, the 2 MiB decoded cap against a gzip body that expands past it, the proxy and netrc environment being ignored, terminal escaping, refused redirects, the confirmation gate on a real pseudo-terminal, port preservation, the `--active` and `--yes` usage errors and the confirmation gate. GitHub Actions runs them on every push. `constraints.txt` records the dependency versions they last passed with.
 
 ## Security
 
