@@ -6,6 +6,8 @@ All notable changes to atarus-webscan. v0.1.0 is tagged in git but was never pub
 
 ### Security
 
+- Fixed: the typed confirmation gate could never open on a real terminal. The terminal was opened in a mode that needs a seekable stream, which a terminal is not, so every interactive active run was refused with the no-terminal error and only --yes worked. The terminal is now opened as a raw descriptor and the prompt is written and read through it; verified on a pseudo-terminal.
+
 - **Passive by default; active checks need `--active`, `--scope` and a typed confirmation.**
 
   What was wrong: a bare `atarus-webscan -t https://example.com` sent about sixty requests to the target with no question asked, including a GET to a random path, GETs to 46 guessed sensitive paths and one request for each of nine HTTP methods, among them POST, PUT, PATCH, DELETE, TRACE and CONNECT. On an application that honours PUT or DELETE, a scan could create or remove a resource. The project's own rule, that a tool observes and reports by default and probes a live system only inside a scope the user set and confirmed, was not true of this tool.
